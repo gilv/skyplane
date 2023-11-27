@@ -59,10 +59,14 @@ def provision(
 
     # TODO: It might be significantly faster to provision AWS, Azure, and GCP concurrently (e.g., using threads)
 
+    aws_combined_regions_to_provision = aws_regions_to_provision.copy()
+    if backup_server and backup_server_region is not None:
+        aws_combined_regions_to_provision.append(backup_server_region)
+
     jobs = []
     jobs.append(partial(aws.setup_global, attach_policy_arn="arn:aws:iam::aws:policy/AmazonS3FullAccess"))
-    if aws_regions_to_provision:
-        for r in set(aws_regions_to_provision):
+    if aws_combined_regions_to_provision:
+        for r in set(aws_combined_regions_to_provision):
             jobs.append(partial(aws.setup_region, r))
     if azure_regions_to_provision:
         jobs.append(azure.create_ssh_key)
@@ -77,13 +81,13 @@ def provision(
         do_parallel(lambda fn: fn(), jobs)
 
     if len(aws_regions_to_provision) > 0:
-        logger.info(f"Provisioning AWS instances in {aws_regions_to_provision}")
+        logger.info(f"Provisioning AWS instances in {aws_combined_regions_to_provision}")
         aws_instance_filter = {
             "tags": {"skyplane": "true"},
             "instance_type": aws_instance_class,
             "state": [compute.ServerState.PENDING, compute.ServerState.RUNNING],
         }
-        do_parallel(aws.add_ips_to_security_group, aws_regions_to_provision, spinner=True, desc="Add IP to aws security groups")
+        do_parallel(aws.add_ips_to_security_group, aws_combined_regions_to_provision, spinner=True, desc="Add IP to aws security groups")
         aws_instances = refresh_instance_list(aws, aws_regions_to_provision, aws_instance_filter)
         missing_aws_regions = set(aws_regions_to_provision) - set(aws_instances.keys())
         if missing_aws_regions:
@@ -99,10 +103,7 @@ def provision(
             aws_instances = refresh_instance_list(aws, aws_regions_to_provision, aws_instance_filter)
         backup_server_found = False
         if backup_server and backup_server_region is not None:
-            aws.setup_region(backup_server_region)
-            combined_aws_regions = aws_regions_to_provision.copy()
-            combined_aws_regions.append(backup_server_region)
-            aws_instances = refresh_instance_list(aws, combined_aws_regions, aws_instance_filter)
+            aws_instances = refresh_instance_list(aws, aws_combined_regions_to_provision, aws_instance_filter)
             for aws_instance_region in aws_instances:
                 for aws_instance in aws_instances[aws_instance_region]:
                     print ("{}, {}".format(aws_instance_region, aws_instance.instance_name()))
@@ -112,7 +113,7 @@ def provision(
             if not backup_server_found:
                 backup_server_name = f"skyplane-aws-skystore-secondary-{str(uuid.uuid4().hex[:8])}"
                 logger.info(f"(AWS) provisioning missing secondary backup server, region: {backup_server_region} instance: {backup_server_name}")
-                
+
                 aws_provisioner = lambda r: aws.provision_instance(r, aws_instance_class, instance_os=aws_instance_os, name = backup_server_name)
                 results = do_parallel(aws_provisioner, [backup_server_region], spinner=True, desc="provision aws")
                 for region, result in results:
@@ -120,8 +121,7 @@ def provision(
                         aws_instances[region] = result
                     else:
                         aws_instances[backup_server_region].append(result)
-                aws_instances = refresh_instance_list(aws, combined_aws_regions, aws_instance_filter)
-            
+                aws_instances = refresh_instance_list(aws, aws_combined_regions_to_provision, aws_instance_filter)
 
     if len(azure_regions_to_provision) > 0:
         logger.info(f"Provisioning Azure instances in {azure_regions_to_provision}")
