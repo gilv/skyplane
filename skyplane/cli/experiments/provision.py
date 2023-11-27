@@ -1,3 +1,4 @@
+import uuid
 from functools import partial
 from typing import Dict, Iterable, List
 from typing import Optional, Tuple
@@ -41,6 +42,8 @@ def provision(
     azure_instance_os: str = "ubuntu",
     gcp_use_premium_network: bool = True,
     log_dir: Optional[str] = None,
+    backup_server: bool = False,
+    backup_server_region : str = "",
 ) -> Tuple[
     Dict[str, List[compute.AWSServer]],
     Dict[str, List[compute.AzureServer]],
@@ -49,6 +52,7 @@ def provision(
 ]:
     """Provision list of instances in AWS, Azure, and GCP in each specified region."""
     aws_instances = {}
+    aws_instances1 = {}
     azure_instances = {}
     gcp_instances = {}
     ibmcloud_instances = {}
@@ -83,12 +87,41 @@ def provision(
         aws_instances = refresh_instance_list(aws, aws_regions_to_provision, aws_instance_filter)
         missing_aws_regions = set(aws_regions_to_provision) - set(aws_instances.keys())
         if missing_aws_regions:
-            logger.info(f"(AWS) provisioning missing regions: {missing_aws_regions}")
-            aws_provisioner = lambda r: aws.provision_instance(r, aws_instance_class, instance_os=aws_instance_os)
+            server_name = f"skyplane-aws-skystore-primary-{str(uuid.uuid4().hex[:8])}"
+            logger.info(f"(AWS) provisioning missing regions: {missing_aws_regions} instance: {server_name}")
+            aws_provisioner = lambda r: aws.provision_instance(r, aws_instance_class, instance_os=aws_instance_os, name = server_name)
             results = do_parallel(aws_provisioner, missing_aws_regions, spinner=True, desc="provision aws")
             for region, result in results:
-                aws_instances[region] = [result]
+                if region not in aws_instances:
+                    aws_instances[region] = result
+                else:
+                    aws_instances[region].append(result)
             aws_instances = refresh_instance_list(aws, aws_regions_to_provision, aws_instance_filter)
+        backup_server_found = False
+        if backup_server and backup_server_region is not None:
+            aws.setup_region(backup_server_region)
+            combined_aws_regions = aws_regions_to_provision.copy()
+            combined_aws_regions.append(backup_server_region)
+            aws_instances = refresh_instance_list(aws, combined_aws_regions, aws_instance_filter)
+            for aws_instance_region in aws_instances:
+                for aws_instance in aws_instances[aws_instance_region]:
+                    print ("{}, {}".format(aws_instance_region, aws_instance.instance_name()))
+                    if 'skystore-secondary' in aws_instance.instance_name():
+                        backup_server_found = True
+
+            if not backup_server_found:
+                backup_server_name = f"skyplane-aws-skystore-secondary-{str(uuid.uuid4().hex[:8])}"
+                logger.info(f"(AWS) provisioning missing secondary backup server, region: {backup_server_region} instance: {backup_server_name}")
+                
+                aws_provisioner = lambda r: aws.provision_instance(r, aws_instance_class, instance_os=aws_instance_os, name = backup_server_name)
+                results = do_parallel(aws_provisioner, [backup_server_region], spinner=True, desc="provision aws")
+                for region, result in results:
+                    if region not in aws_instances:
+                        aws_instances[region] = result
+                    else:
+                        aws_instances[backup_server_region].append(result)
+                aws_instances = refresh_instance_list(aws, combined_aws_regions, aws_instance_filter)
+            
 
     if len(azure_regions_to_provision) > 0:
         logger.info(f"Provisioning Azure instances in {azure_regions_to_provision}")
