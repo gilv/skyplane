@@ -97,9 +97,19 @@ def provision(
             results = do_parallel(aws_provisioner, missing_aws_regions, spinner=True, desc="provision aws")
             for region, result in results:
                 if region not in aws_instances:
-                    aws_instances[region] = result
+                    aws_instances[region] = [result]
                 else:
                     aws_instances[region].append(result)
+            server_name = f"skyplane-aws-skystore-secondary-hot-{str(uuid.uuid4().hex[:8])}"
+            logger.info(f"(AWS) provisioning missing regions: {missing_aws_regions} instance: {server_name}")
+            aws_provisioner = lambda r: aws.provision_instance(r, aws_instance_class, instance_os=aws_instance_os, name = server_name)
+            results = do_parallel(aws_provisioner, missing_aws_regions, spinner=True, desc="provision aws")
+            for region, result in results:
+                if region not in aws_instances:
+                    aws_instances[region] = [result]
+                else:
+                    aws_instances[region].append(result)
+
             aws_instances = refresh_instance_list(aws, aws_regions_to_provision, aws_instance_filter)
         backup_server_found = False
         if backup_server and backup_server_region is not None:
@@ -107,18 +117,18 @@ def provision(
             for aws_instance_region in aws_instances:
                 for aws_instance in aws_instances[aws_instance_region]:
                     print ("{}, {}".format(aws_instance_region, aws_instance.instance_name()))
-                    if 'skystore-secondary' in aws_instance.instance_name():
+                    if 'skystore-secondary-cold' in aws_instance.instance_name():
                         backup_server_found = True
 
             if not backup_server_found:
-                backup_server_name = f"skyplane-aws-skystore-secondary-{str(uuid.uuid4().hex[:8])}"
+                backup_server_name = f"skyplane-aws-skystore-secondary-cold-{str(uuid.uuid4().hex[:8])}"
                 logger.info(f"(AWS) provisioning missing secondary backup server, region: {backup_server_region} instance: {backup_server_name}")
 
                 aws_provisioner = lambda r: aws.provision_instance(r, aws_instance_class, instance_os=aws_instance_os, name = backup_server_name)
                 results = do_parallel(aws_provisioner, [backup_server_region], spinner=True, desc="provision aws")
                 for region, result in results:
                     if region not in aws_instances:
-                        aws_instances[region] = result
+                        aws_instances[region] = [result]
                     else:
                         aws_instances[backup_server_region].append(result)
                 aws_instances = refresh_instance_list(aws, aws_combined_regions_to_provision, aws_instance_filter)
